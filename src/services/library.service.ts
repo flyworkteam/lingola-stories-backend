@@ -11,6 +11,7 @@ function trimSlash(s: string) {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
+// ✅ Yardımcı Metot: Dış servise gidip çeviri yapar
 async function callWordDbTranslate(params: {
   word: string;
   sourceLang: string;
@@ -25,8 +26,6 @@ async function callWordDbTranslate(params: {
   }
 
   const base = trimSlash(WORD_DB_URL);
-
-  // ✅ bazı ortamlarda /api prefix var, bazılarında yok → ikisini de dene
   const candidates = [`${base}/api/words/translate`, `${base}/words/translate`];
 
   let lastErr: any = null;
@@ -41,7 +40,6 @@ async function callWordDbTranslate(params: {
       return { url, data: res.data };
     } catch (e: any) {
       lastErr = e;
-      // 404 ise diğer path'i dene, diğer statuslarda direkt patlat
       const status = e?.response?.status;
       if (status === 404) continue;
       throw e;
@@ -59,6 +57,10 @@ async function callWordDbTranslate(params: {
   );
 }
 
+// ----------------------------------------------------------------------
+// Ekleme, Silme, Fav Toggle metodları aynı kalıyor...
+// ----------------------------------------------------------------------
+
 export async function addWordToLibrary(params: {
   userId: string;
   word: string;
@@ -67,20 +69,13 @@ export async function addWordToLibrary(params: {
   level?: string;
   isFav?: boolean;
 }) {
-  const word = String(params.word ?? "")
-    .trim()
-    .toLowerCase();
-  const sourceLang = String(params.sourceLang ?? "en")
-    .trim()
-    .toLowerCase();
-  const targetLang = String(params.targetLang ?? "")
-    .trim()
-    .toLowerCase();
+  const word = String(params.word ?? "").trim().toLowerCase();
+  const sourceLang = String(params.sourceLang ?? "en").trim().toLowerCase();
+  const targetLang = String(params.targetLang ?? "").trim().toLowerCase();
 
   if (!word) throw httpError(400, "word zorunlu");
   if (!targetLang) throw httpError(400, "targetLang zorunlu");
 
-  // 1) Word DB'den çeviri datasını çek
   const { data } = await callWordDbTranslate({
     word,
     sourceLang,
@@ -92,13 +87,10 @@ export async function addWordToLibrary(params: {
     throw httpError(404, data?.message || "Word DB: çeviri bulunamadı");
   }
 
-  // docs response:
-  // data: { id, verb, verbLang, level, source:{word,language}, target:{translation,pronunciation,language}}
   const payload = data.data;
   const translation = payload?.target?.translation ?? null;
   const detectedLevel = payload?.level ?? null;
 
-  // 2) UserWord upsert
   const saved = await prisma.userWord.upsert({
     where: {
       uniq_user_word_per_lang: {
@@ -124,79 +116,163 @@ export async function addWordToLibrary(params: {
     },
   });
 
-  return {
-    success: true,
-    item: saved,
-    wordDb: data.data, // debug için iyi, istersen kaldırırız
-  };
+  return { success: true, item: saved, wordDb: data.data };
 }
 
+// 🔥🔥 TAMAMEN YENİLENEN LIST METHODU 🔥🔥
 export async function listLibraryWords(params: {
   userId: string;
   q?: string;
   limit?: number;
   offset?: number;
+  sourceLang?: string; // İstenen KELİME dili (Örn: Almanca)
+  targetLang?: string; // İstenen ANLAM dili (Örn: Türkçe)
 }) {
   const q = (params.q ?? "").trim().toLowerCase();
   const limit = Math.min(Math.max(params.limit ?? 100, 1), 200);
   const offset = Math.max(params.offset ?? 0, 0);
 
+  // 1. FİLTRELEME YOK! Sadece User ID.
   const where: any = { userId: params.userId };
 
   if (q) {
     where.OR = [{ word: { contains: q } }, { translation: { contains: q } }];
   }
 
+  // Veriyi çek
   const [count, items] = await Promise.all([
     prisma.userWord.count({ where }),
     prisma.userWord.findMany({
       where,
-      orderBy: [
-        { level: "asc" }, // 1. Önce Seviye (A0, A1, A2...)
-        { updatedAt: "desc" }, // 2. Seviye içinde en son güncellenen en üstte
-      ],
+      orderBy: [{ level: "asc" }, { updatedAt: "desc" }],
       skip: offset,
       take: limit,
     }),
   ]);
 
-  return { success: true, count, items };
+  // Eğer frontend dil parametrelerini göndermediyse (veya boşsa) direkt dön.
+  if (!params.sourceLang && !params.targetLang) {
+    return { success: true, count, items };
+  }
+  
+  const reqSource = params.sourceLang?.trim().toLowerCase();
+  const reqTarget = params.targetLang?.trim().toLowerCase();
+
+  // 2. DÖNÜŞTÜRME DÖNGÜSÜ
+  const updatedItems = await Promise.all(
+    items.map(async (item) => {
+      let wordToUpdate = item.word;
+      let transToUpdate = item.translation;
+      let sourceToUpdate = item.sourceLang;
+      let targetToUpdate = item.targetLang;
+      
+      let hasChanges = false;
+
+      // ---------------------------------------------------------
+      // A) KELİME DÖNÜŞÜMÜ (Örn: Apple[en] -> Apfel[de])
+      // ---------------------------------------------------------
+      if (reqSource && item.sourceLang !== reqSource) {
+        try {
+          console.log(`🔀 Word Transforming: '${item.word}' (${item.sourceLang} -> ${reqSource})`);
+          
+          // API'ye diyoruz ki: Bu kelimeyi al, 'reqSource' diline çevir.
+          const { data } = await callWordDbTranslate({
+            word: item.word,
+            sourceLang: item.sourceLang,
+            targetLang: reqSource, // Hedef dili buraya veriyoruz ki kelimeyi çevirsin
+          });
+
+          const newWord = data?.data?.target?.translation;
+          
+          if (newWord) {
+            wordToUpdate = String(newWord).toLowerCase();
+            sourceToUpdate = reqSource;
+            hasChanges = true;
+          }
+        } catch (e) {
+          console.error(`Failed to transform word '${item.word}'`, e);
+        }
+      }
+
+      // ---------------------------------------------------------
+      // B) ANLAM DÖNÜŞÜMÜ (Örn: Elma[tr] -> Manzana[es])
+      // ---------------------------------------------------------
+      if (reqTarget && item.targetLang !== reqTarget) {
+        try {
+          console.log(`🔀 Meaning Transforming: '${item.word}' (Meaning -> ${reqTarget})`);
+
+          // API'ye diyoruz ki: Orijinal kelimeyi al, 'reqTarget' diline çevir.
+          // NOT: Burada 'item.word' (orijinal) kullanıyoruz, henüz değişmiş olabilecek 'wordToUpdate'i değil.
+          // Çünkü çeviri servisi orijinal kelimeyi daha iyi tanır.
+          const { data } = await callWordDbTranslate({
+            word: item.word,
+            sourceLang: item.sourceLang,
+            targetLang: reqTarget,
+          });
+
+          const newTrans = data?.data?.target?.translation;
+
+          if (newTrans) {
+            transToUpdate = String(newTrans);
+            targetToUpdate = reqTarget;
+            hasChanges = true;
+          }
+        } catch (e) {
+           console.error(`Failed to transform meaning for '${item.word}'`, e);
+        }
+      }
+
+      // ---------------------------------------------------------
+      // C) DB GÜNCELLEME
+      // ---------------------------------------------------------
+      if (hasChanges) {
+        try {
+          // Güncellenmiş veriyi DB'ye yaz
+          const updated = await prisma.userWord.update({
+            where: { id: item.id },
+            data: {
+              word: wordToUpdate,
+              sourceLang: sourceToUpdate,
+              translation: transToUpdate,
+              targetLang: targetToUpdate,
+              // Eğer kelime değiştiyse seviyesi de değişebilir ama şimdilik tutuyoruz
+            }
+          });
+          return updated;
+        } catch (dbErr) {
+           // Unique constraint hatası olabilir (çevrilen kelime zaten listede varsa)
+           console.error("DB update failed during transformation", dbErr);
+           return item; 
+        }
+      }
+
+      return item;
+    })
+  );
+
+  return { success: true, count, items: updatedItems };
 }
 
-export async function deleteLibraryWord(params: {
-  userId: string;
-  id: string;
-}) {
+export async function deleteLibraryWord(params: { userId: string; id: string }) {
   const found = await prisma.userWord.findFirst({
     where: { id: params.id, userId: params.userId },
     select: { id: true },
   });
-
   if (!found) throw httpError(404, "Word not found");
-
   await prisma.userWord.delete({ where: { id: params.id } });
-
   return { success: true };
 }
 
-export async function toggleFavLibraryWord(params: {
-  userId: string;
-  id: string;
-  isFav?: boolean; // undefined => toggle
-}) {
+export async function toggleFavLibraryWord(params: { userId: string; id: string; isFav?: boolean }) {
   const row = await prisma.userWord.findFirst({
     where: { id: params.id, userId: params.userId },
     select: { id: true, isFav: true },
   });
-
   if (!row) throw httpError(404, "Word not found");
-
   const next = typeof params.isFav === "boolean" ? params.isFav : !row.isFav;
-
   const updated = await prisma.userWord.update({
     where: { id: params.id },
     data: { isFav: next },
   });
-
   return { success: true, item: updated };
 }

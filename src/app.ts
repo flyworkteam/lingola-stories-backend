@@ -45,7 +45,7 @@ app.get("/", async () => {
 
 const start = async () => {
   try {
-    const port = 3016;
+    const port = Number(3018);
     await app.listen({ port, host: "0.0.0.0" });
     console.log(`🚀 Sunucu çalışıyor: http://localhost:${port}`);
   } catch (err) {
@@ -53,5 +53,6 @@ const start = async () => {
     process.exit(1);
   }
 };
+
 
 start();

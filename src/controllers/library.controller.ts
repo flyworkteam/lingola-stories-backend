@@ -14,17 +14,12 @@ export type AddBody = {
   isFav?: boolean;
 };
 
-export type ListQuery = {
-  q?: string;
-  limit?: string;
-  offset?: string;
-};
-
 export type DeleteParams = {
   id: string;
 };
 
 export type ToggleFavBody = {
+  // gönderirsen set eder, göndermezsen toggle eder
   isFav?: boolean;
 };
 
@@ -50,6 +45,14 @@ export async function addLibraryWordHandler(
   return reply.send(result);
 }
 
+export type ListQuery = {
+  q?: string;
+  limit?: string;
+  offset?: string;
+  sourceLang?: string; // Öğrenilen Dil
+  targetLang?: string; // Uygulama Dili (Çeviri)
+};
+
 export async function listLibraryWordsHandler(
   req: FastifyRequest<{ Querystring: ListQuery }>,
   reply: FastifyReply
@@ -67,11 +70,12 @@ export async function listLibraryWordsHandler(
     q: q.q,
     limit,
     offset,
+    sourceLang: q.sourceLang, // Servise ilet
+    targetLang: q.targetLang, // Servise ilet
   });
 
   return reply.send(result);
 }
-
 export async function deleteLibraryWordHandler(
   req: FastifyRequest<{ Params: DeleteParams }>,
   reply: FastifyReply
