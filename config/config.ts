@@ -12,7 +12,7 @@ const buildDatabaseUrl = (): string => {
   const user = process.env.DB_USER || '';
   const password = process.env.DB_PASSWORD || '';
   const host = process.env.DB_HOST || 'localhost';
-  const port = process.env.DB_PORT || '3019';
+  const port = process.env.DB_PORT || '3018';
   const database = process.env.DB_NAME || '';
 
   // Şifreyi encode et (özel karakterler için)
