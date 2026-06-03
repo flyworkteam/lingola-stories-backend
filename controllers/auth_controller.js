@@ -21,10 +21,14 @@ const AuthController = {
 
   async googleLogin(req, reply) {
     try {
-      const { idToken } = req.body;
+      const bodySchema = z.object({
+        idToken: z.string().min(20),
+      });
+      const { idToken } = bodySchema.parse(req.body);
       const user = await AuthService.socialLogin("google", idToken);
       return AuthController._generateTokenAndSend(req, reply, user);
     } catch (error) {
+      req.log.error({ err: error }, "Google login failed");
       return reply.code(401).send({ error: "Google girişi başarısız" });
     }
   },
