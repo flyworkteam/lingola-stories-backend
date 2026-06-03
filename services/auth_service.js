@@ -4,11 +4,33 @@ const jwksClient = require("jwks-rsa");
 const axios = require("axios");
 const usersRepo = require("../repositories/users_repository");
 
-const GOOGLE_CLIENT_IDS_STRING = process.env.GOOGLE_CLIENT_IDS || "";
-const ALLOWED_CLIENT_IDS = GOOGLE_CLIENT_IDS_STRING.split(",").map((id) =>
-  id.trim()
-);
-const googleClient = new OAuth2Client(ALLOWED_CLIENT_IDS[0]);
+function collectGoogleClientIds() {
+  const fromSeparate = [
+    process.env.GOOGLE_WEB_CLIENT_ID,
+    process.env.GOOGLE_IOS_CLIENT_ID,
+    process.env.GOOGLE_ANDROID_CLIENT_ID,
+  ];
+
+  const ids = fromSeparate.map((id) => (id || "").trim()).filter(Boolean);
+
+  if (ids.length > 0) return ids;
+
+  // Eski tek satırlık GOOGLE_CLIENT_IDS (geriye dönük uyumluluk)
+  return (process.env.GOOGLE_CLIENT_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+const ALLOWED_CLIENT_IDS = collectGoogleClientIds();
+
+if (ALLOWED_CLIENT_IDS.length === 0) {
+  console.error(
+    "[Auth] Google client id yok. .env içine GOOGLE_WEB_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, GOOGLE_ANDROID_CLIENT_ID ekleyin."
+  );
+}
+
+const googleClient = new OAuth2Client();
 
 const appleClient = jwksClient({
   jwksUri: "https://appleid.apple.com/auth/keys",
@@ -16,6 +38,13 @@ const appleClient = jwksClient({
 
 const AuthService = {
   async _verifyGoogle(token) {
+    if (!token || typeof token !== "string") {
+      throw new Error("Google idToken missing");
+    }
+    if (ALLOWED_CLIENT_IDS.length === 0) {
+      throw new Error("Google client IDs not configured on server");
+    }
+
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: ALLOWED_CLIENT_IDS,
