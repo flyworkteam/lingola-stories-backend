@@ -1,4 +1,3 @@
-const { OAuth2Client } = require("google-auth-library");
 const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 const axios = require("axios");
@@ -30,7 +29,19 @@ if (ALLOWED_CLIENT_IDS.length === 0) {
   );
 }
 
-const googleClient = new OAuth2Client();
+// google-auth-library v1/certs bazı sunucularda 403 veriyor; JWKS (v3) kullanıyoruz.
+const googleJwksClient = jwksClient({
+  jwksUri:
+    process.env.GOOGLE_JWKS_URI ||
+    "https://www.googleapis.com/oauth2/v3/certs",
+  cache: true,
+  cacheMaxAge: 60 * 60 * 1000,
+  timeout: 30000,
+  requestHeaders: {
+    "User-Agent": "LingolaStories-Backend/1.0",
+    Accept: "application/json",
+  },
+});
 
 const appleClient = jwksClient({
   jwksUri: "https://appleid.apple.com/auth/keys",
@@ -45,16 +56,24 @@ const AuthService = {
       throw new Error("Google client IDs not configured on server");
     }
 
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
+    const decoded = jwt.decode(token, { complete: true });
+    if (!decoded?.header?.kid) {
+      throw new Error("Invalid Google Token Structure");
+    }
+
+    const key = await googleJwksClient.getSigningKey(decoded.header.kid);
+    const signingKey = key.getPublicKey();
+
+    const verified = jwt.verify(token, signingKey, {
+      algorithms: ["RS256"],
       audience: ALLOWED_CLIENT_IDS,
+      issuer: ["https://accounts.google.com", "accounts.google.com"],
     });
-    const payload = ticket.getPayload();
-    if (!payload) throw new Error("Google Payload Empty");
+
     return {
-      email: payload.email,
-      providerId: payload.sub,
-      name: payload.name || payload.given_name || "Language Learner",
+      email: verified.email,
+      providerId: verified.sub,
+      name: verified.name || verified.given_name || "Language Learner",
     };
   },
 
