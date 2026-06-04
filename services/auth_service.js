@@ -3,22 +3,24 @@ const jwksClient = require("jwks-rsa");
 const axios = require("axios");
 const usersRepo = require("../repositories/users_repository");
 
-function collectGoogleClientIds() {
-  const fromSeparate = [
-    process.env.GOOGLE_WEB_CLIENT_ID,
-    process.env.GOOGLE_IOS_CLIENT_ID,
-    process.env.GOOGLE_ANDROID_CLIENT_ID,
-  ];
-
-  const ids = fromSeparate.map((id) => (id || "").trim()).filter(Boolean);
-
-  if (ids.length > 0) return ids;
-
-  // Eski tek satırlık GOOGLE_CLIENT_IDS (geriye dönük uyumluluk)
-  return (process.env.GOOGLE_CLIENT_IDS || "")
+function parseClientIds(value) {
+  return (value || "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+}
+
+function collectGoogleClientIds() {
+  const fromSeparate = [
+    ...parseClientIds(process.env.GOOGLE_WEB_CLIENT_ID),
+    ...parseClientIds(process.env.GOOGLE_IOS_CLIENT_ID),
+    ...parseClientIds(process.env.GOOGLE_ANDROID_CLIENT_ID),
+  ];
+
+  if (fromSeparate.length > 0) return fromSeparate;
+
+  // Eski tek satırlık GOOGLE_CLIENT_IDS (geriye dönük uyumluluk)
+  return parseClientIds(process.env.GOOGLE_CLIENT_IDS);
 }
 
 const ALLOWED_CLIENT_IDS = collectGoogleClientIds();
